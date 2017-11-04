@@ -90,7 +90,7 @@ public class DGM {
 						}
 					}
 
-					Thread.currentThread().sleep(200);
+					Thread.currentThread().sleep(600);
 				}
 			} catch (InterruptedException e) {
 
@@ -180,7 +180,7 @@ public class DGM {
 
 					for (Integer key : heartbeatCnt.keySet()) {
 						long curTime = System.currentTimeMillis();
-						if (curTime - heartbeatCnt.get(key) > 1000) {
+						if (curTime - heartbeatCnt.get(key) > 2000) {
 							markAsFailure(key);
 						}
 					}
