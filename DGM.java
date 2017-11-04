@@ -210,7 +210,7 @@ public class DGM {
 					server = new ServerSocket(SERVER_PORT);
 					while (!goingToLeave) {
 						Socket socket = server.accept();
-						PrintWriter socket_out = new PrintWriter(socket.getOutputStream(), true);
+						PrintWriter socket_out = new PrintWriter(socket.getOutputStream());
 						BufferedReader socket_in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 						String request = socket_in.readLine();
 						switch (request) {
@@ -263,13 +263,13 @@ public class DGM {
 					if (!addr.equals(thisNode.hostName)) {
 						try {
 							Socket socket = new Socket(addr, SERVER_PORT);
-							PrintWriter socket_out = new PrintWriter(socket.getOutputStream(), true);
+							PrintWriter socket_out = new PrintWriter(socket.getOutputStream());
 							BufferedReader socket_in = new BufferedReader(
 									new InputStreamReader(socket.getInputStream()));
 							System.out.println("Sending replica request...");
 							socket_out.println("Replica");
 							socket_out.println(filename);
-
+							socket_out.flush();
 							String line = socket_in.readLine();
 							if (line.equals("Cancel")) {
 								socket_in.close();
@@ -420,13 +420,13 @@ public class DGM {
 		}
 		synchronized (membershipList) {
 			for (Node node : membershipList) {
-				if(node != null){
-				try {
-					sendMessage(node.hostName, DELETEFILE, sdfsfilename);
-				} catch (UnknownHostException e) {
-					e.printStackTrace();
+				if (node != null) {
+					try {
+						sendMessage(node.hostName, DELETEFILE, sdfsfilename);
+					} catch (UnknownHostException e) {
+						e.printStackTrace();
+					}
 				}
-			}
 			}
 		}
 
@@ -437,7 +437,7 @@ public class DGM {
 	 */
 	private void getFile(String sdfsfilename, String localfilename) {
 		String[] addresses = getReplicasAddr(sdfsfilename);
-		
+
 		if (addresses == null || addresses[0] == null) {
 			System.out.println("Error!!" + sdfsfilename + " not stored on the cluster");
 			return;
@@ -446,7 +446,7 @@ public class DGM {
 		Socket socket;
 		try {
 			socket = new Socket(address, SERVER_PORT);
-			PrintWriter socket_out = new PrintWriter(socket.getOutputStream(), true);
+			PrintWriter socket_out = new PrintWriter(socket.getOutputStream());
 
 			// send get request
 			System.out.println("sending get request");
@@ -495,7 +495,7 @@ public class DGM {
 				if (address != null) {
 					BufferedReader file_in = new BufferedReader(new FileReader(localfilename));
 					Socket socket = new Socket(address, SERVER_PORT);
-					PrintWriter socket_out = new PrintWriter(socket.getOutputStream(), true);
+					PrintWriter socket_out = new PrintWriter(socket.getOutputStream());
 					BufferedReader socket_in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
 					// sending command, sdfsfilename and timestamp
@@ -503,6 +503,7 @@ public class DGM {
 					socket_out.println("Put");
 					socket_out.println(sdfsfilename);
 					socket_out.println(timestamp);
+					socket_out.flush();
 					String status = socket_in.readLine();
 					if (status.equals("Confirmation")) {
 						System.out.print("Less than 1 minute gap between consecutive updates! Continue?(y/n):");
@@ -871,16 +872,19 @@ public class DGM {
 	}
 
 	public void deleteNodeFileRecords(String hostName) {
-		for (String filename : fileRecords.keySet()) {
-			List<FileRecord> list = fileRecords.get(filename);
-			int i = 0;
-			for (; i < list.size(); i++) {
-				if (list.get(i).addr.equals(hostName))
-					break;
+		synchronized (fileRecords) {
+			for (String filename : fileRecords.keySet()) {
+				List<FileRecord> list = fileRecords.get(filename);
+				int i = 0;
+				for (; i < list.size(); i++) {
+					if (list.get(i).addr.equals(hostName))
+						break;
+				}
+				if (i < 3 && fileRecords.get(filename).size() > 0)
+					list.remove(i);
 			}
-			if (i < 3)
-				list.remove(i);
 		}
+
 	}
 
 	/*
@@ -1037,11 +1041,22 @@ public class DGM {
 		}
 	}
 
+	private void writeFileOpLog(String event, String filename) {
+		try {
+			FileWriter writer = new FileWriter(getHostName() + ".log", true);
+			writer.write(event + "\t" + filename + "\t" + new Timestamp(System.currentTimeMillis()).toString() + "\n");
+			writer.flush();
+			writer.close();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+
 	public void addFileRecord(String filename, String addr, long timestamp) {
 		FileRecord fileRecord = new FileRecord(filename, addr, timestamp);
 		if (fileRecords.containsKey(filename)) {
-			for(int i = 0; i < fileRecords.get(filename).size();i++){
-				if(fileRecords.get(filename).get(i).addr.equals(addr)){
+			for (int i = 0; i < fileRecords.get(filename).size(); i++) {
+				if (fileRecords.get(filename).get(i).addr.equals(addr)) {
 					fileRecords.get(filename).get(i).timestamp = timestamp;
 					return;
 				}
@@ -1058,8 +1073,10 @@ public class DGM {
 	public void deleteFile(String filename) {
 		if (fileRecords.containsKey(filename)) {
 			File file = new File(filename);
-			if (file.exists() && file.isFile())
+			if (file.exists() && file.isFile()) {
 				file.delete();
+				writeFileOpLog("Delete", filename);
+			}
 			fileRecords.remove(filename);
 		}
 	}
@@ -1078,7 +1095,9 @@ public class DGM {
 		socket_out.println("Continue");
 
 		File file = new File(filename);
-		PrintWriter file_out = new PrintWriter(new FileWriter(file, false), true);
+		// PrintWriter file_out = new PrintWriter(new FileWriter(file, false),
+		// true);
+		PrintWriter file_out = new PrintWriter(new FileWriter(filename));
 		long timestamp = Long.parseLong(socket_in.readLine());
 		System.out.println("Receiving replica...");
 		String line = socket_in.readLine();
@@ -1089,6 +1108,9 @@ public class DGM {
 		file_out.flush();
 		file_out.close();
 		System.out.println("Replica received");
+
+		writeFileOpLog("Replica", filename);
+
 		synchronized (membershipList) {
 			for (Node node : membershipList) {
 				if (node != null) {
@@ -1109,12 +1131,14 @@ public class DGM {
 		String filename = socket_in.readLine();
 		long timestamp = Long.parseLong(socket_in.readLine());
 		System.out.println("cond1: " + fileRecords.containsKey(filename));
-		if(fileRecords.containsKey(filename)){
+		if (fileRecords.containsKey(filename)) {
 			System.out.println("cond2: " + (timestamp != fileRecords.get(filename).get(0).timestamp));
-			System.out.println("cond3: " + (timestamp - fileRecords.get(filename).get(0).timestamp < (long)(60 * 1000)));
+			System.out
+					.println("cond3: " + (timestamp - fileRecords.get(filename).get(0).timestamp < (long) (60 * 1000)));
 		}
-		
-		if (fileRecords.containsKey(filename) && (timestamp != fileRecords.get(filename).get(0).timestamp) && (timestamp - fileRecords.get(filename).get(0).timestamp < (long)(60 * 1000))) {
+
+		if (fileRecords.containsKey(filename) && (timestamp != fileRecords.get(filename).get(0).timestamp)
+				&& (timestamp - fileRecords.get(filename).get(0).timestamp < (long) (60 * 1000))) {
 			socket_out.println("Confirmation");
 			socket_out.flush();
 			String line = socket_in.readLine();
@@ -1124,7 +1148,9 @@ public class DGM {
 			socket_out.println("continue");
 			socket_out.flush();
 		}
-		PrintWriter file_out = new PrintWriter(new FileWriter(new File(filename), false), true);
+		// PrintWriter file_out = new PrintWriter(new FileWriter(new
+		// File(filename), false), true);
+		PrintWriter file_out = new PrintWriter(new FileWriter(filename));
 		String line = socket_in.readLine();
 		while (line != null) {
 			file_out.println(line);
@@ -1132,6 +1158,8 @@ public class DGM {
 		}
 		file_out.flush();
 		file_out.close();
+
+		writeFileOpLog("Update", filename);
 
 		synchronized (membershipList) {
 			for (Node node : membershipList) {
@@ -1141,6 +1169,7 @@ public class DGM {
 				}
 			}
 		}
+
 	}
 
 	public void responseToGet(Socket socket, BufferedReader socket_in, PrintWriter socket_out) throws IOException {
@@ -1149,7 +1178,8 @@ public class DGM {
 		File file = new File(filename);
 		if (!fileRecords.containsKey(filename) || !file.exists()) {
 			socket_out.println("Not Found");
-			return;	
+			socket_out.flush();
+			return;
 		}
 
 		BufferedReader file_in = new BufferedReader(new FileReader(filename));
