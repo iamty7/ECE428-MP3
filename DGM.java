@@ -1,10 +1,14 @@
 import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -210,7 +214,7 @@ public class DGM {
 					server = new ServerSocket(SERVER_PORT);
 					while (!goingToLeave) {
 						Socket socket = server.accept();
-						PrintWriter socket_out = new PrintWriter(socket.getOutputStream());
+						PrintWriter socket_out = new PrintWriter(socket.getOutputStream(), true);
 						BufferedReader socket_in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 						String request = socket_in.readLine();
 						switch (request) {
@@ -263,33 +267,40 @@ public class DGM {
 					if (!addr.equals(thisNode.hostName)) {
 						try {
 							Socket socket = new Socket(addr, SERVER_PORT);
-							PrintWriter socket_out = new PrintWriter(socket.getOutputStream());
+							PrintWriter socket_out = new PrintWriter(socket.getOutputStream(), true);
 							BufferedReader socket_in = new BufferedReader(
 									new InputStreamReader(socket.getInputStream()));
-							System.out.println("Sending replica request...");
+							System.out.println("Sending replica request to " + addr);
 							socket_out.println("Replica");
 							socket_out.println(filename);
 							socket_out.flush();
-							String line = socket_in.readLine();
-							if (line.equals("Cancel")) {
+							if (socket_in.readLine().equals("Cancel")) {
 								socket_in.close();
 								socket_out.close();
 								socket.close();
 								continue;
 							}
 							socket_out.println(fileRecords.get(filename).get(0).timestamp);
-							BufferedReader file_in = new BufferedReader(new FileReader(filename));
-							System.out.println("Sending replica...");
-							line = file_in.readLine();
-							while (line != null) {
-								socket_out.println(line);
-								line = file_in.readLine();
-							}
 							socket_out.flush();
-							socket_out.close();
+							
+							BufferedInputStream file_in_s = new BufferedInputStream(new FileInputStream(filename));
+							BufferedOutputStream socket_out_s = new BufferedOutputStream(socket.getOutputStream());
+							System.out.println("Sending replica...");
+							byte[] line = new byte[4096];
+							int len;
+							while ((len = file_in_s.read(line)) != -1) {
+								socket_out_s.write(line, 0, len);
+							}
 							System.out.println("Sending replica complete");
+							socket_out_s.flush();
+							file_in_s.close();
+							socket_out_s.close();
+							socket_out.close();
+							
+							
+							
+							
 							socket.close();
-							file_in.close();
 						} catch (UnknownHostException e) {
 							e.printStackTrace();
 						} catch (ConnectException e) {
@@ -446,36 +457,37 @@ public class DGM {
 		Socket socket;
 		try {
 			socket = new Socket(address, SERVER_PORT);
-			PrintWriter socket_out = new PrintWriter(socket.getOutputStream());
+			PrintWriter socket_out = new PrintWriter(socket.getOutputStream(), true);
 
 			// send get request
 			System.out.println("sending get request");
 			socket_out.println("Get");
 			socket_out.println(sdfsfilename);
-			socket_out.flush();
 
 			BufferedReader socket_in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-			String line = socket_in.readLine();
-			if (line.equals("Not Found")) {
+			if (socket_in.readLine().equals("Not Found")) {
 				System.out.println("Error!!" + sdfsfilename + " not stored on the cluster");
 				socket_in.close();
 				socket_out.close();
 				socket.close();
 				return;
 			}
-
+			
 			// receive file data
 			System.out.println("Starting receiving " + sdfsfilename + " from " + address + " ...");
-			PrintWriter file_out = new PrintWriter(new FileWriter(localfilename));
-			while (line != null) {
-				file_out.println(line);
-				line = socket_in.readLine();
+			BufferedOutputStream file_out_s = new BufferedOutputStream(new FileOutputStream(localfilename));
+			BufferedInputStream socket_in_s = new BufferedInputStream(socket.getInputStream());
+			byte[] line = new byte[4096];
+			int len;
+			while ((len = socket_in_s.read(line)) != -1) {
+				file_out_s.write(line, 0, len);
 			}
 
-			file_out.flush();
-			file_out.close();
+			file_out_s.flush();
+			file_out_s.close();
 			socket_in.close();
 			socket_out.close();
+			socket_in_s.close();
 			socket.close();
 			System.out.println(sdfsfilename + " received");
 		} catch (IOException e) {
@@ -491,52 +503,62 @@ public class DGM {
 		long timestamp = System.currentTimeMillis();
 		String[] addresses = getReplicasAddr(sdfsfilename);
 		try {
+			Boolean conti = null;
 			for (String address : addresses) {
 				if (address != null) {
-					BufferedReader file_in = new BufferedReader(new FileReader(localfilename));
-					Socket socket = new Socket(address, SERVER_PORT);
-					PrintWriter socket_out = new PrintWriter(socket.getOutputStream());
-					BufferedReader socket_in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
+					Socket socket = new Socket(address, SERVER_PORT);
+
+					PrintWriter socket_out = new PrintWriter(socket.getOutputStream(), true);
+					BufferedInputStream file_in_s = new BufferedInputStream(new FileInputStream(localfilename));
+					BufferedReader socket_in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 					// sending command, sdfsfilename and timestamp
 					System.out.println("sending put request");
 					socket_out.println("Put");
+					socket_out.flush();
 					socket_out.println(sdfsfilename);
 					socket_out.println(timestamp);
 					socket_out.flush();
 					String status = socket_in.readLine();
 					if (status.equals("Confirmation")) {
-						System.out.print("Less than 1 minute gap between consecutive updates! Continue?(y/n):");
-						long timestampforconfir = System.currentTimeMillis();
-						String confirmation = keyboard.nextLine();
-						while (!(confirmation.equals("y") || confirmation.equals("n"))) {
-							System.out.print("Continue?(y/n):");
-							confirmation = keyboard.nextLine();
-						}
-						if (confirmation.equals("n") || (System.currentTimeMillis() - timestampforconfir) > 30 * 1000) {
-							System.out.println();
-							System.out.println("Update canceled!");
-							socket_out.println("Cancel");
-							socket_out.flush();
-							file_in.close();
-							socket_out.close();
-							socket_in.close();
-							socket.close();
-							return;
-						} else {
+						if (conti == null) {
+							System.out.print("Less than 1 minute gap between consecutive updates! Continue?(y/n):");
+							long timestampforconfir = System.currentTimeMillis();
+							String confirmation = keyboard.nextLine();
+							while (!(confirmation.equals("y") || confirmation.equals("n"))) {
+								System.out.print("Continue?(y/n):");
+								confirmation = keyboard.nextLine();
+							}
+							if (confirmation.equals("n")
+									|| (System.currentTimeMillis() - timestampforconfir) > 30 * 1000) {
+								System.out.println();
+								System.out.println("Update canceled!");
+								socket_out.println("Cancel");
+								file_in_s.close();
+								socket_out.close();
+								socket_in.close();
+								socket.close();
+								return;
+							} else {
+								conti = new Boolean(true);
+								socket_out.println("Continue");
+							}
+						} else
 							socket_out.println("Continue");
-						}
 					}
+					
 					System.out.println("sending file...");
-					String line = file_in.readLine();
-					while (line != null) {
-						socket_out.println(line);
-						line = file_in.readLine();
+					BufferedOutputStream socket_out_s = new BufferedOutputStream(socket.getOutputStream());
+					byte[] line = new byte[4096];
+					int len;
+					while ((len = file_in_s.read(line)) != -1) {
+						socket_out_s.write(line, 0, len);
 					}
 					System.out.println("sending compeleted");
-					socket_out.flush();
-					file_in.close();
+					socket_out_s.flush();
+					file_in_s.close();
 					socket_out.close();
+					socket_out_s.close();
 					socket_in.close();
 					socket.close();
 				}
@@ -555,7 +577,7 @@ public class DGM {
 	 */
 	private String[] getReplicasAddr(String sdfsfilename) {
 		int fileHashID = getHashID(sdfsfilename);
-		System.out.println("fileHashID:" + fileHashID);
+		System.out.println("getReplicasAddr, filename:" + sdfsfilename);
 		List<String> list = new LinkedList<>();
 		int cnt = 0;
 		for (int i = fileHashID;;) {
@@ -1087,7 +1109,6 @@ public class DGM {
 			for (FileRecord fileRecord : fileRecords.get(filename)) {
 				if (fileRecord.addr.equals(thisNode.hostName)) {
 					socket_out.println("Cancel");
-					socket_out.flush();
 					return;
 				}
 			}
@@ -1097,16 +1118,19 @@ public class DGM {
 		File file = new File(filename);
 		// PrintWriter file_out = new PrintWriter(new FileWriter(file, false),
 		// true);
-		PrintWriter file_out = new PrintWriter(new FileWriter(filename));
+		BufferedOutputStream file_out_s = new BufferedOutputStream(new FileOutputStream(filename));
 		long timestamp = Long.parseLong(socket_in.readLine());
+		
 		System.out.println("Receiving replica...");
-		String line = socket_in.readLine();
-		while (line != null) {
-			file_out.println(line);
-			line = socket_in.readLine();
+		BufferedInputStream socket_in_s = new BufferedInputStream(socket.getInputStream());
+		byte[] line = new byte[4096];
+		int len;
+		while ((len = socket_in_s.read(line)) != -1) {
+			file_out_s.write(line, 0, len);
 		}
-		file_out.flush();
-		file_out.close();
+		file_out_s.flush();
+		file_out_s.close();
+		socket_in_s.close();
 		System.out.println("Replica received");
 
 		writeFileOpLog("Replica", filename);
@@ -1146,18 +1170,20 @@ public class DGM {
 				return;
 		} else {
 			socket_out.println("continue");
-			socket_out.flush();
 		}
 		// PrintWriter file_out = new PrintWriter(new FileWriter(new
 		// File(filename), false), true);
-		PrintWriter file_out = new PrintWriter(new FileWriter(filename));
-		String line = socket_in.readLine();
-		while (line != null) {
-			file_out.println(line);
-			line = socket_in.readLine();
+		
+		BufferedOutputStream file_out_s = new BufferedOutputStream(new FileOutputStream(filename));
+		BufferedInputStream socket_in_s = new BufferedInputStream(socket.getInputStream());
+		byte[] line = new byte[4096];
+		int len;
+		while ((len = socket_in_s.read(line)) != -1) {
+			file_out_s.write(line, 0, len);
 		}
-		file_out.flush();
-		file_out.close();
+		file_out_s.flush();
+		file_out_s.close();
+		socket_in_s.close();
 
 		writeFileOpLog("Update", filename);
 
@@ -1178,19 +1204,23 @@ public class DGM {
 		File file = new File(filename);
 		if (!fileRecords.containsKey(filename) || !file.exists()) {
 			socket_out.println("Not Found");
-			socket_out.flush();
 			return;
 		}
-
-		BufferedReader file_in = new BufferedReader(new FileReader(filename));
-		String line = file_in.readLine();
-		while (line != null) {
-			socket_out.println(line);
-			line = file_in.readLine();
+		else{
+			socket_out.println("Continue");
+		}
+	
+		BufferedInputStream file_in_s = new BufferedInputStream(new FileInputStream(filename));
+		BufferedOutputStream socket_out_s = new BufferedOutputStream(socket.getOutputStream());
+		byte[] line = new byte[4096];
+		int len;
+		while ((len = file_in_s.read(line)) != -1) {
+			socket_out_s.write(line, 0, len);
 		}
 
-		socket_out.flush();
-		file_in.close();
+		socket_out_s.flush();
+		file_in_s.close();
+		socket_out_s.close();
 
 	}
 
