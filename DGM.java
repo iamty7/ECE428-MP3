@@ -1209,7 +1209,11 @@ public class DGM {
 		else{
 			socket_out.println("Continue");
 		}
-	
+		try {
+			Thread.currentThread().sleep(200);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
 		BufferedInputStream file_in_s = new BufferedInputStream(new FileInputStream(filename));
 		BufferedOutputStream socket_out_s = new BufferedOutputStream(socket.getOutputStream());
 		byte[] line = new byte[4096];
